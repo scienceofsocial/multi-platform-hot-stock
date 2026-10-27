@@ -1,0 +1,43 @@
+# ---- 数据与运行时产物（体积大、且含会话凭证）----
+_hot_archive/
+out/
+data/
+*.log
+*.jsonl
+*.xls
+*.csv
+*.db
+*.exe
+*.zip
+*.png
+*.pyc
+__pycache__/
+
+# ---- 运行时凭证 / 缓存（绝不入库）----
+*cookie*.json
+cookie.json
+tags_cache.json
+jygs_red_cache.json
+_em_*.json
+last_good.json
+hot_seen.json
+
+# ---- 临时探针（上游接口调试用，用完即删）----
+_probe_*.py
+_probe_*.txt
+_probe_*.html
+_probe_*.log
+_tmp_*.py
+_smoke_*
+_pbc_*
+_timing_*
+_widget_data.js
+
+# ---- 批量生成的专题明细（可由脚本重建）----
+龙头榜_变化时点_*.md
+五平台人气共振_日报_*.md
+回测_*.csv
+
+# ---- 系统 ----
+.DS_Store
+Thumbs.db
