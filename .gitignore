@@ -1,8 +1,13 @@
 # ---- 数据与运行时产物（体积大、且含会话凭证）----
-_hot_archive/
+# 注意： _hot_archive/ 本机是几百 MB 的轨迹，不入库；
+#       但云端备份 workflow 需要提交它，用下面的白名单放行**每日归档文件**。
+_hot_archive/*
+!_hot_archive/hot_2*.json
 out/
 data/
 *.log
+# 云端备份只需要「每日终态」hot_<日期>.json；变化轨迹体积大，不入库
+hot_trace.jsonl
 *.jsonl
 *.xls
 *.csv
@@ -21,6 +26,7 @@ jygs_red_cache.json
 _em_*.json
 last_good.json
 hot_seen.json
+names_cache.json
 
 # ---- 临时探针（上游接口调试用，用完即删）----
 _probe_*.py

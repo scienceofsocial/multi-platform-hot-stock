@@ -1,0 +1,110 @@
+# 多平台人气榜 · 云端每日备份采集
+#
+# 定位：**备份**，不是主力。本机 Task Scheduler（HotRankTDX_Intraday 每 10 分钟）
+# 才是真实运行的地方；这里每天收盘后跑一次，把当日榜单终态提交回仓库，
+# 防止本机断电/断网丢失当日数据。
+#
+# 为什么是「每天一次」而不是「每 10 分钟」：
+#   * GitHub Actions 免费 cron 延迟极大（实测设 00:30 UTC，05:08~07:00 才跑，
+#     延迟 4.5~6.5 小时），做不了盘中 10 分钟级的「变化时点」记录；
+#   * 每次 10 分钟一跑，一个月约 1056 分钟，吃掉 2000 分钟免费额度的一半；
+#   * 收盘后跑，晚几小时无所谓，拿到的就是当日终态。
+#
+# 不能上云的部分（刻意剔除）：
+#   * 韭研公社（a_fetch_jygs_red.py）—— 依赖 Playwright + 真实浏览器；
+#   * 通达信 .dat / .blk 导出 —— 写 C:\new_tdx\，云端无此目录；
+#   * 日线回测 —— 依赖本机 C:\new_tdx\vipdoc。
+#   这些留在本机跑。
+name: 人气榜每日备份采集
+
+on:
+  schedule:
+    # UTC 07:30 = 北京时间 15:30（收盘后 30 分钟）
+    # 周一到周五。节假日照跑无害（会抓到最后一次终态）。
+    - cron: "30 7 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: write          # 需要提交归档文件回仓库
+
+concurrency:
+  group: hot-snapshot-backup
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: 抓取五平台榜单
+        # 退出码 1 = 有平台失败但已落盘（韭研在云端必然失败，属预期）
+        continue-on-error: true
+        run: python a_fetch_hot_snapshot.py --out last_good.json
+
+      - name: 校验快照
+        run: |
+          python - <<"PY"
+          import json, sys, os
+          p = "last_good.json"
+          if not os.path.exists(p):
+              print("::error::last_good.json 未生成")
+              sys.exit(1)
+          j = json.load(open(p, encoding="utf-8"))
+          ld = (j.get("sj88") or {}).get("ld") or {}
+          n_board = len(ld)
+          n_top1 = sum(1 for v in ld.values() if isinstance(v, dict) and v.get("rank") == 1)
+          n_top2 = sum(1 for v in ld.values() if isinstance(v, dict) and v.get("rank") == 2)
+          print("龙头榜 %d 只 / 龙一 %d 只 / 龙二 %d 只" % (n_board, n_top1, n_top2))
+          if n_board == 0:
+              print("::error::龙头榜为空，抓取失败")
+              sys.exit(1)
+          # 写入 job summary
+          names = {c: (v.get("name") or "") for c, v in ld.items() if isinstance(v, dict)}
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
+              fh.write("## 龙头榜 %s\n\n" % j.get("date"))
+              fh.write("榜内 **%d** 只；龙一 %d 只，龙二 %d 只\n\n" % (n_board, n_top1, n_top2))
+              fh.write("| 代码 | 名称 | 名次 |\n|---|---|---:|\n")
+              for c, v in sorted(ld.items(), key=lambda kv: (kv[1].get("rank") or 999))[:15]:
+                  if isinstance(v, dict):
+                      fh.write("| %s | %s | %s |\n" % (c, v.get("name", ""), v.get("rank")))
+          PY
+
+      - name: 归档（生成 hot_<日期>.json + hot_trace.jsonl）
+        run: python a_archive_hot_snapshot.py
+
+      - name: 提交归档文件
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add _hot_archive/
+          if git diff --staged --quiet; then
+            echo "当日无变化，跳过提交"
+          else
+            git commit -m "backup: 人气榜归档 $(date -u +%Y-%m-%d)"
+            git push
+          fi
+
+      - name: 保留 Artifact（30 天）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hot-${{ github.run_number }}
+          path: |
+            last_good.json
+            _hot_archive/
+          retention-days: 30
+          if-no-files-found: warn
