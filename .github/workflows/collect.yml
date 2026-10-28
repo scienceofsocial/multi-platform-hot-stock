@@ -15,6 +15,11 @@
 #   * 通达信 .dat / .blk 导出 —— 写 C:\new_tdx\，云端无此目录；
 #   * 日线回测 —— 依赖本机 C:\new_tdx\vipdoc。
 #   这些留在本机跑。
+#
+# 宽容模式（2026-10-28）：抓不到**不判失败**，只写 Summary + warning。
+#   实测境外服务器抓 55188 龙头接口返回空、东财涨停池偶发空，
+#   若严格判空 Actions 会天天报红。所以这里永远退出 0，
+#   把“缺了什么”如实写进 Job Summary，当作**境外视角的对照记录**。
 name: 人气榜每日备份采集
 
 on:
@@ -55,14 +60,18 @@ jobs:
         continue-on-error: true
         run: python a_fetch_hot_snapshot.py --out last_good.json
 
-      - name: 校验快照
+      # 宽容模式：抓不到不失败，只如实记录。
+      # 原因：GitHub 服务器在境外，55188 龙头接口对境外 IP 常返回空，
+      # 韭研需要浏览器（playwright）云端没有。若严格判空，Actions 会天天报红，
+      # 反而掩盖真正的问题。这里只写 Summary + 打 warning，永远退出 0。
+      - name: 校验快照（宽容：只记录，不失败）
         run: |
           python - <<"PY"
           import json, sys, os
           p = "last_good.json"
           if not os.path.exists(p):
-              print("::error::last_good.json 未生成")
-              sys.exit(1)
+              print("::warning::last_good.json 未生成（抓取整体失败），本次不归档")
+              sys.exit(0)
           j = json.load(open(p, encoding="utf-8"))
           ld = (j.get("sj88") or {}).get("ld") or {}
           n_board = len(ld)
@@ -70,27 +79,52 @@ jobs:
           n_top2 = sum(1 for v in ld.values() if isinstance(v, dict) and v.get("rank") == 2)
           print("龙头榜 %d 只 / 龙一 %d 只 / 龙二 %d 只" % (n_board, n_top1, n_top2))
           if n_board == 0:
-              print("::error::龙头榜为空，抓取失败")
-              sys.exit(1)
-          # 写入 job summary
-          names = {c: (v.get("name") or "") for c, v in ld.items() if isinstance(v, dict)}
+              print("::warning::龙头榜为空（55188 龙头接口对境外 IP 常返回空），仅记录")
+          # ---- 写入 job summary（含各平台抓取情况，便于判断“境外视角”缺了什么）----
+          snaps = {"em": "东方财富", "tgb": "淘股吧", "kph": "开盘啦",
+                   "sj88": "55188", "jygs": "韭研公社", "cls": "财联社",
+                   "tdx": "通达信", "baidu": "百度热搜"}
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
-              fh.write("## 龙头榜 %s\n\n" % j.get("date"))
-              fh.write("榜内 **%d** 只；龙一 %d 只，龙二 %d 只\n\n" % (n_board, n_top1, n_top2))
-              fh.write("| 代码 | 名称 | 名次 |\n|---|---|---:|\n")
-              for c, v in sorted(ld.items(), key=lambda kv: (kv[1].get("rank") or 999))[:15]:
+              fh.write("## 抓取概况 %s\n\n" % j.get("date"))
+              fh.write("| 平台 | 条数 | 状态 |\n|---|---:|---|\n")
+              for k, label in snaps.items():
+                  v = j.get(k)
                   if isinstance(v, dict):
-                      fh.write("| %s | %s | %s |\n" % (c, v.get("name", ""), v.get("rank")))
+                      n = len(v)
+                  elif isinstance(v, list):
+                      n = len(v)
+                  else:
+                      n = 0
+                  flag = "OK" if n > 0 else ("空（境外常见）" if k in ("sj88", "jygs") else "**空**")
+                  fh.write("| %s | %d | %s |\n" % (label, n, flag))
+              fh.write("\n## 龙头榜（55188 sj88.ld）\n\n")
+              if n_board == 0:
+                  fh.write("> ⚠️ 本次龙头榜为空 —— 该接口对境外 IP 常返回空，属预期。\n")
+                  fh.write("> 完整的龙头/龙一/龙二请以**本机** `HotRankTDX_Intraday` 为准。\n\n")
+              else:
+                  fh.write("榜内 **%d** 只；龙一 %d 只，龙二 %d 只\n\n" % (n_board, n_top1, n_top2))
+                  fh.write("| 代码 | 名称 | 名次 |\n|---|---|---:|\n")
+                  for c, v in sorted(ld.items(), key=lambda kv: (kv[1].get("rank") or 999))[:15]:
+                      if isinstance(v, dict):
+                          fh.write("| %s | %s | %s |\n" % (c, v.get("name", ""), v.get("rank")))
           PY
 
       - name: 归档（生成 hot_<日期>.json + hot_trace.jsonl）
-        run: python a_archive_hot_snapshot.py
+        # 宽容：快照不存在或无龙头榜时也照样归档（留个境外视角的记录），
+        # 归档脚本自身失败也不影响后续步骤。
+        continue-on-error: true
+        run: |
+          if [ -f last_good.json ]; then
+            python a_archive_hot_snapshot.py || echo "::warning::归档脚本返回非 0，已忽略"
+          else
+            echo "::warning::没有 last_good.json，跳过归档"
+          fi
 
       - name: 提交归档文件
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add _hot_archive/
+          if [ -d _hot_archive ]; then git add _hot_archive/; fi
           if git diff --staged --quiet; then
             echo "当日无变化，跳过提交"
           else
